@@ -1,1136 +1,724 @@
-from flask import Flask, request, jsonify
-import json
-import sqlite3
+"""
+AI Business Insight Dashboard - Single File Flask App
+Deploy: python app.py
+Access: http://localhost:5000
+"""
+
+# ========== IMPORTS ==========
 import os
+import sqlite3
+import json
+from datetime import datetime, timedelta
+from flask import Flask, render_template_string, request, jsonify, redirect, url_for
+import plotly.graph_objects as go
+import plotly.utils
+import random
+import hashlib
+from functools import lru_cache
 
+# ========== CONFIGURATION ==========
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-key-2026")
+DATABASE = 'business_data.db'
 
-# Initialize SQLite database
-def init_db():
-    conn = sqlite3.connect('rigs.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS rigs
-                 (id TEXT PRIMARY KEY, type TEXT, data TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS connections
-                 (id TEXT PRIMARY KEY, source TEXT, target TEXT, data TEXT)''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
-@app.route('/')
-def index():
-    return '''<!DOCTYPE html>
+# ========== HTML TEMPLATES (Embedded) ==========
+BASE_TEMPLATE = '''
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Visual Programming System</title>
+    <title>{% block title %}Business Insight AI{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
         :root {
-            --bg-primary: #1e1e1e;
-            --bg-secondary: #2d2d2d;
-            --bg-tertiary: #3d3d3d;
-            --text-primary: #e0e0e0;
-            --text-secondary: #b0b0b0;
-            --accent: #007acc;
-            --accent-hover: #0098ff;
-            --border: #404040;
-            --success: #4caf50;
-            --warning: #ff9800;
-            --error: #f44336;
+            --primary: #6366f1;
+            --secondary: #8b5cf6;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
         }
-
-        [data-theme="light"] {
-            --bg-primary: #ffffff;
-            --bg-secondary: #f5f5f5;
-            --bg-tertiary: #e0e0e0;
-            --text-primary: #212121;
-            --text-secondary: #757575;
-            --border: #d0d0d0;
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         }
-
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
+        .card-hover:hover {
+            transform: translateY(-5px);
+            transition: transform 0.3s ease;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1) !important;
+        }
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(99, 102, 241, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+        }
+        .insight-card {
+            border-left: 4px solid var(--primary);
+        }
+        .metric-card {
+            border-radius: 15px;
             overflow: hidden;
         }
-
-        #canvas-container {
-            width: 100%;
-            height: calc(100vh - 60px);
-            position: relative;
-            overflow: hidden;
-            background: linear-gradient(90deg, var(--border) 1px, transparent 1px),
-                        linear-gradient(var(--border) 1px, transparent 1px);
-            background-size: 20px 20px;
-        }
-
-        #canvas {
-            width: 100%;
-            height: 100%;
-            position: absolute;
-            cursor: grab;
-        }
-
-        #canvas:active {
-            cursor: grabbing;
-        }
-
-        svg {
-            position: absolute;
-            width: 100%;
-            height: 100%;
-            pointer-events: none;
-            z-index: 1;
-        }
-
-        .rig {
-            position: absolute;
-            background: var(--bg-secondary);
-            border: 2px solid var(--border);
-            border-radius: 8px;
-            min-width: 250px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            z-index: 10;
-            transition: box-shadow 0.2s;
-        }
-
-        .rig:hover {
-            box-shadow: 0 6px 20px rgba(0,0,0,0.4);
-        }
-
-        .rig.selected {
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px rgba(0, 122, 204, 0.3);
-        }
-
-        .rig-header {
-            padding: 10px 12px;
-            background: var(--bg-tertiary);
-            border-bottom: 1px solid var(--border);
-            cursor: move;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-radius: 6px 6px 0 0;
-        }
-
-        .rig-title {
-            font-weight: 600;
-            font-size: 14px;
-            flex: 1;
-        }
-
-        .rig-btn {
-            background: none;
-            border: none;
-            color: var(--text-secondary);
-            cursor: pointer;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            transition: all 0.2s;
-        }
-
-        .rig-btn:hover {
-            background: var(--bg-secondary);
-            color: var(--text-primary);
-        }
-
-        .rig-content {
-            padding: 12px;
-            max-height: 400px;
-            overflow-y: auto;
-        }
-
-        .rig-content::-webkit-scrollbar {
-            width: 8px;
-        }
-
-        .rig-content::-webkit-scrollbar-track {
-            background: var(--bg-secondary);
-        }
-
-        .rig-content::-webkit-scrollbar-thumb {
-            background: var(--border);
-            border-radius: 4px;
-        }
-
-        .connector {
-            width: 12px;
-            height: 12px;
+        .trend-up { color: var(--success); }
+        .trend-down { color: var(--danger); }
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid var(--primary);
             border-radius: 50%;
-            position: absolute;
-            cursor: crosshair;
-            transition: all 0.2s;
-            z-index: 100;
-        }
-
-        .connector.input {
-            left: -6px;
-            background: var(--success);
-            border: 2px solid var(--bg-secondary);
-        }
-
-        .connector.output {
-            right: -6px;
-            background: var(--accent);
-            border: 2px solid var(--bg-secondary);
-        }
-
-        .connector:hover {
-            transform: scale(1.3);
-            box-shadow: 0 0 10px currentColor;
-        }
-
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 12px;
-        }
-
-        .data-table th,
-        .data-table td {
-            padding: 8px;
-            text-align: left;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .data-table th {
-            background: var(--bg-tertiary);
-            font-weight: 600;
-            position: sticky;
-            top: 0;
-        }
-
-        .data-table input {
-            width: 100%;
-            background: var(--bg-primary);
-            border: 1px solid var(--border);
-            color: var(--text-primary);
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-        }
-
-        .function-input {
-            margin-top: 8px;
-        }
-
-        .function-input input,
-        .function-input select,
-        .function-input textarea {
-            width: 100%;
-            background: var(--bg-primary);
-            border: 1px solid var(--border);
-            color: var(--text-primary);
-            padding: 6px 10px;
-            border-radius: 4px;
-            font-size: 12px;
-            margin-top: 4px;
-        }
-
-        .function-input textarea {
-            resize: vertical;
-            min-height: 60px;
-            font-family: 'Courier New', monospace;
-        }
-
-        .function-input label {
-            font-size: 11px;
-            color: var(--text-secondary);
-            display: block;
-        }
-
-        .execute-btn {
-            width: 100%;
-            margin-top: 8px;
-            padding: 8px;
-            background: var(--accent);
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: background 0.2s;
-        }
-
-        .execute-btn:hover {
-            background: var(--accent-hover);
-        }
-
-        .output-area {
-            background: var(--bg-primary);
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            padding: 8px;
-            margin-top: 8px;
-            font-family: 'Courier New', monospace;
-            font-size: 11px;
-            max-height: 150px;
-            overflow-y: auto;
-        }
-
-        #bottom-nav {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            height: 60px;
-            background: var(--bg-secondary);
-            border-top: 1px solid var(--border);
-            display: flex;
-            align-items: center;
-            padding: 0 20px;
-            gap: 10px;
-            z-index: 1000;
-            overflow-x: auto;
-        }
-
-        #bottom-nav::-webkit-scrollbar {
-            height: 6px;
-        }
-
-        #bottom-nav::-webkit-scrollbar-thumb {
-            background: var(--border);
-            border-radius: 3px;
-        }
-
-        .nav-btn {
-            padding: 8px 16px;
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            color: var(--text-primary);
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 500;
-            white-space: nowrap;
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .nav-btn:hover {
-            background: var(--accent);
-            border-color: var(--accent);
-            transform: translateY(-2px);
-        }
-
-        .mode-switcher {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 10px;
-            z-index: 1000;
-            display: flex;
-            gap: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-        }
-
-        .mode-btn {
-            padding: 6px 12px;
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            color: var(--text-primary);
-            cursor: pointer;
-            font-size: 12px;
-            transition: all 0.2s;
-        }
-
-        .mode-btn:hover {
-            background: var(--accent);
-        }
-
-        .mode-btn.active {
-            background: var(--accent);
-            border-color: var(--accent-hover);
-        }
-
-        .add-column-btn {
-            padding: 6px 12px;
-            background: var(--success);
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-            margin: 5px 5px 8px 0;
-        }
-
-        .add-column-btn:hover {
-            opacity: 0.9;
-        }
-
-        .chat-container {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-
-        .chat-message {
-            padding: 8px 12px;
-            border-radius: 6px;
-            max-width: 80%;
-        }
-
-        .chat-message.user {
-            background: var(--accent);
-            align-self: flex-end;
-            margin-left: auto;
-        }
-
-        .chat-message.assistant {
-            background: var(--bg-tertiary);
-            align-self: flex-start;
-        }
-
-        .chat-input-container {
-            display: flex;
-            gap: 8px;
-            margin-top: 10px;
-        }
-
-        .chat-input-container input {
-            flex: 1;
-        }
-
-        .neural-layer {
-            margin: 10px 0;
-        }
-
-        .neural-node {
-            display: inline-block;
             width: 30px;
             height: 30px;
-            border-radius: 50%;
-            background: #e74c3c;
-            margin: 5px;
-            position: relative;
-        }
-
-        .neural-node::after {
-            content: attr(data-value);
-            position: absolute;
-            bottom: -20px;
-            left: 50%;
-            transform: translateX(-50%);
-            font-size: 10px;
-            white-space: nowrap;
-        }
-
-        .context-menu {
-            position: fixed;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 6px;
-            z-index: 10000;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            display: none;
-        }
-
-        .context-menu-item {
-            padding: 8px 16px;
-            cursor: pointer;
-            border-radius: 4px;
-            font-size: 13px;
-            white-space: nowrap;
-        }
-
-        .context-menu-item:hover {
-            background: var(--bg-tertiary);
-        }
-
-        .type-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 10px;
-            font-size: 10px;
-            font-weight: 600;
-            margin-left: 8px;
-            background: var(--accent);
-        }
-
-        .spinner {
-            border: 3px solid var(--border);
-            border-top: 3px solid var(--accent);
-            border-radius: 50%;
-            width: 20px;
-            height: 20px;
             animation: spin 1s linear infinite;
-            display: inline-block;
         }
-
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
     </style>
 </head>
-<body>
-    <div class="mode-switcher">
-        <button class="mode-btn active" onclick="setTheme('dark')">🌙 Dark</button>
-        <button class="mode-btn" onclick="setTheme('light')">☀️ Light</button>
-        <button class="mode-btn" onclick="toggleAutoConnect()">🔗 Auto</button>
-        <button class="mode-btn" onclick="clearCanvas()">🗑️ Clear</button>
-        <button class="mode-btn" onclick="saveWorkspace()">💾 Save</button>
-        <button class="mode-btn" onclick="loadWorkspace()">📂 Load</button>
+<body class="bg-light">
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark gradient-bg shadow">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="/">
+                <i class="bi bi-graph-up-arrow me-2"></i>BizInsight AI
+            </a>
+            <div class="navbar-nav">
+                <a class="nav-link" href="/"><i class="bi bi-dashboard me-1"></i>Dashboard</a>
+                <a class="nav-link" href="/reports"><i class="bi bi-file-earmark-text me-1"></i>Reports</a>
+                <a class="nav-link" href="/settings"><i class="bi bi-gear me-1"></i>Settings</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container mt-4">
+        {% block content %}{% endblock %}
     </div>
 
-    <div id="canvas-container">
-        <svg id="connections-svg"></svg>
-        <div id="canvas"></div>
-    </div>
+    <!-- Footer -->
+    <footer class="mt-5 py-4 bg-white border-top">
+        <div class="container text-center text-muted">
+            <p>AI Business Insight Dashboard • v1.0 • Data updates every 15 minutes</p>
+            <p class="small">Last updated: {{ current_time }}</p>
+        </div>
+    </footer>
 
-    <div id="bottom-nav">
-        <button class="nav-btn" onclick="addRig('data')"><span>📊</span> Data</button>
-        <button class="nav-btn" onclick="addRig('table')"><span>📋</span> Table</button>
-        <button class="nav-btn" onclick="addRig('function')"><span>⚙️</span> Function</button>
-        <button class="nav-btn" onclick="addRig('llm')"><span>🤖</span> LLM</button>
-        <button class="nav-btn" onclick="addRig('neural')"><span>🧠</span> Neural</button>
-        <button class="nav-btn" onclick="addRig('chart')"><span>📈</span> Chart</button>
-        <button class="nav-btn" onclick="addRig('database')"><span>💾</span> Database</button>
-        <button class="nav-btn" onclick="addRig('custom')"><span>✨</span> Custom</button>
-    </div>
-
-    <div id="context-menu" class="context-menu">
-        <div class="context-menu-item" onclick="duplicateRig()">Duplicate</div>
-        <div class="context-menu-item" onclick="deleteRig()">Delete</div>
-        <div class="context-menu-item" onclick="exportRig()">Export</div>
-    </div>
-
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        let rigs = [];
-        let connections = [];
-        let selectedRig = null;
-        let draggedRig = null;
-        let canvasOffset = { x: 0, y: 0 };
-        let isPanning = false;
-        let panStart = { x: 0, y: 0 };
-        let connectionStart = null;
-        let rigCounter = 0;
-        let autoConnect = false;
-        let contextMenuTarget = null;
-
-        const canvas = document.getElementById('canvas');
-        const svg = document.getElementById('connections-svg');
-        const contextMenu = document.getElementById('context-menu');
-
-        document.addEventListener('DOMContentLoaded', () => {
-            loadWorkspace();
-            setupEventListeners();
-        });
-
-        function setupEventListeners() {
-            canvas.addEventListener('mousedown', (e) => {
-                if (e.target === canvas) {
-                    isPanning = true;
-                    panStart = { x: e.clientX - canvasOffset.x, y: e.clientY - canvasOffset.y };
-                }
-            });
-
-            document.addEventListener('mousemove', (e) => {
-                if (isPanning) {
-                    canvasOffset.x = e.clientX - panStart.x;
-                    canvasOffset.y = e.clientY - panStart.y;
-                    canvas.style.transform = `translate(${canvasOffset.x}px, ${canvasOffset.y}px)`;
-                    updateConnections();
-                }
-            });
-
-            document.addEventListener('mouseup', () => {
-                isPanning = false;
-            });
-
-            document.addEventListener('click', (e) => {
-                if (!contextMenu.contains(e.target)) {
-                    contextMenu.style.display = 'none';
-                }
-            });
-
-            document.addEventListener('keydown', (e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-                    e.preventDefault();
-                    saveWorkspace();
-                }
-                if (e.key === 'Delete' && selectedRig) {
-                    deleteRig();
-                }
-            });
-        }
-
-        function addRig(type) {
-            const rigId = `rig-${++rigCounter}`;
-            const rig = {
-                id: rigId,
-                type: type,
-                x: 100 + Math.random() * 300,
-                y: 100 + Math.random() * 200,
-                data: getRigDefaultData(type)
-            };
-            rigs.push(rig);
-            createRigElement(rig);
-            saveToBackend(rig);
-        }
-
-        function getRigDefaultData(type) {
-            switch(type) {
-                case 'table':
-                    return { columns: ['Col 1', 'Col 2', 'Col 3'], rows: [['', '', ''], ['', '', '']] };
-                case 'function':
-                    return { functionType: 'sum', code: '// Custom function\\nreturn input;' };
-                case 'neural':
-                    return { layers: [4, 6, 4, 2], activation: 'relu' };
-                case 'llm':
-                    return { messages: [], model: 'gpt-4', temperature: 0.7 };
-                case 'chart':
-                    return { chartType: 'line', data: [] };
-                case 'database':
-                    return { tables: [], queries: [] };
-                default:
-                    return {};
-            }
-        }
-
-        function createRigElement(rig) {
-            const rigEl = document.createElement('div');
-            rigEl.className = 'rig';
-            rigEl.id = rig.id;
-            rigEl.style.left = rig.x + 'px';
-            rigEl.style.top = rig.y + 'px';
-
-            rigEl.innerHTML = `
-                <div class="rig-header">
-                    <div class="rig-title">${getTypeIcon(rig.type)} ${rig.type}<span class="type-badge">${rig.type.toUpperCase()}</span></div>
-                    <div><button class="rig-btn" onclick="minimizeRig('${rig.id}')">−</button>
-                    <button class="rig-btn" onclick="removeRig('${rig.id}')">×</button></div>
-                </div>
-                <div class="rig-content" id="${rig.id}-content">${getRigContent(rig)}</div>
-            `;
-
-            const inputConnector = document.createElement('div');
-            inputConnector.className = 'connector input';
-            inputConnector.style.top = '20px';
-            inputConnector.onclick = (e) => handleConnectorClick(e, rig.id, 'input');
-            rigEl.appendChild(inputConnector);
-
-            const outputConnector = document.createElement('div');
-            outputConnector.className = 'connector output';
-            outputConnector.style.top = '20px';
-            outputConnector.onclick = (e) => handleConnectorClick(e, rig.id, 'output');
-            rigEl.appendChild(outputConnector);
-
-            const header = rigEl.querySelector('.rig-header');
-            header.addEventListener('mousedown', (e) => startDrag(e, rig));
-
-            rigEl.addEventListener('contextmenu', (e) => {
-                e.preventDefault();
-                showContextMenu(e, rig);
-            });
-
-            rigEl.addEventListener('click', () => selectRig(rig.id));
-            canvas.appendChild(rigEl);
-        }
-
-        function getRigContent(rig) {
-            switch(rig.type) {
-                case 'table': return createTableContent(rig);
-                case 'function': return createFunctionContent(rig);
-                case 'neural': return createNeuralContent(rig);
-                case 'llm': return createLLMContent(rig);
-                case 'chart': return createChartContent(rig);
-                case 'database': return createDatabaseContent(rig);
-                case 'data': return createDataContent(rig);
-                default: return '<p>Custom Rig - Add your content here</p>';
-            }
-        }
-
-        function createTableContent(rig) {
-            let html = '<div>';
-            html += `<button class="add-column-btn" onclick="addColumn('${rig.id}')">+ Column</button>`;
-            html += `<button class="add-column-btn" onclick="addRow('${rig.id}')">+ Row</button></div>`;
-            html += '<table class="data-table"><thead><tr>';
-            rig.data.columns.forEach((col, i) => {
-                html += `<th><input value="${col}" onchange="updateColumnName('${rig.id}', ${i}, this.value)" /></th>`;
-            });
-            html += '</tr></thead><tbody>';
-            rig.data.rows.forEach((row, ri) => {
-                html += '<tr>';
-                row.forEach((cell, ci) => {
-                    html += `<td><input value="${cell}" onchange="updateCell('${rig.id}', ${ri}, ${ci}, this.value)" /></td>`;
-                });
-                html += '</tr>';
-            });
-            html += '</tbody></table>';
-            return html;
-        }
-
-        function createFunctionContent(rig) {
-            return `
-                <div class="function-input"><label>Function Type</label>
-                <select onchange="updateFunctionType('${rig.id}', this.value)">
-                    <option value="sum">Sum</option><option value="average">Average</option>
-                    <option value="filter">Filter</option><option value="map">Map</option>
-                    <option value="custom">Custom</option>
-                </select></div>
-                <div class="function-input"><label>Custom Code (JavaScript)</label>
-                <textarea onchange="updateFunctionCode('${rig.id}', this.value)">${rig.data.code}</textarea></div>
-                <button class="execute-btn" onclick="executeFunction('${rig.id}')">Execute Function</button>
-                <div class="output-area" id="${rig.id}-output">Output will appear here...</div>
-            `;
-        }
-
-        function createNeuralContent(rig) {
-            let html = '<div class="function-input"><label>Network Architecture (comma-separated)</label>';
-            html += `<input value="${rig.data.layers.join(',')}" onchange="updateNeuralLayers('${rig.id}', this.value)" /></div>`;
-            rig.data.layers.forEach((count, i) => {
-                html += `<div class="neural-layer"><small>Layer ${i + 1} (${count} nodes)</small><br>`;
-                for(let j = 0; j < Math.min(count, 8); j++) {
-                    html += `<div class="neural-node" data-value="${(Math.random()).toFixed(2)}"></div>`;
-                }
-                if(count > 8) html += `<span>... +${count - 8} more</span>`;
-                html += '</div>';
-            });
-            html += `<button class="execute-btn" onclick="trainNetwork('${rig.id}')">Train Network</button>`;
-            return html;
-        }
-
-        function createLLMContent(rig) {
-            let html = `<div class="chat-container" id="${rig.id}-chat">`;
-            rig.data.messages.forEach(msg => {
-                html += `<div class="chat-message ${msg.role}">${msg.content}</div>`;
-            });
-            html += '</div><div class="chat-input-container">';
-            html += `<input type="text" id="${rig.id}-input" placeholder="Type a message..." onkeypress="if(event.key==='Enter') sendLLMMessage('${rig.id}')" />`;
-            html += `<button class="execute-btn" style="margin:0;width:auto;padding:6px 12px;" onclick="sendLLMMessage('${rig.id}')">Send</button></div>`;
-            return html;
-        }
-
-        function createChartContent(rig) {
-            return `<div class="function-input"><label>Chart Type</label>
-                <select onchange="updateChartType('${rig.id}', this.value)">
-                    <option value="line">Line Chart</option><option value="bar">Bar Chart</option>
-                    <option value="pie">Pie Chart</option><option value="scatter">Scatter Plot</option>
-                </select></div>
-                <div style="width:100%;height:150px;background:var(--bg-primary);border-radius:4px;display:flex;align-items:center;justify-content:center;">
-                    Chart will render here
-                </div>`;
-        }
-
-        function createDatabaseContent(rig) {
-            return `<div class="function-input"><label>SQL Query</label>
-                <textarea placeholder="SELECT * FROM table_name"></textarea></div>
-                <button class="execute-btn" onclick="executeQuery('${rig.id}')">Run Query</button>
-                <div class="output-area" id="${rig.id}-query-output">Results will appear here...</div>`;
-        }
-
-        function createDataContent(rig) {
-            return `<div class="function-input"><label>Data Source</label>
-                <input type="text" placeholder="Enter data or URL" /></div>
-                <div class="function-input"><label>Format</label>
-                <select><option>JSON</option><option>CSV</option><option>XML</option></select></div>
-                <button class="execute-btn" onclick="loadData('${rig.id}')">Load Data</button>`;
-        }
-
-        function startDrag(e, rig) {
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-            draggedRig = rig;
-            const rigEl = document.getElementById(rig.id);
-            const rect = rigEl.getBoundingClientRect();
-            draggedRig.offsetX = e.clientX - rect.left;
-            draggedRig.offsetY = e.clientY - rect.top;
-            document.addEventListener('mousemove', doDrag);
-            document.addEventListener('mouseup', stopDrag);
-        }
-
-        function doDrag(e) {
-            if (!draggedRig) return;
-            const rigEl = document.getElementById(draggedRig.id);
-            draggedRig.x = e.clientX - draggedRig.offsetX - canvasOffset.x;
-            draggedRig.y = e.clientY - draggedRig.offsetY - canvasOffset.y;
-            rigEl.style.left = draggedRig.x + 'px';
-            rigEl.style.top = draggedRig.y + 'px';
-            updateConnections();
-        }
-
-        function stopDrag() {
-            if (draggedRig) saveToBackend(draggedRig);
-            draggedRig = null;
-            document.removeEventListener('mousemove', doDrag);
-            document.removeEventListener('mouseup', stopDrag);
-        }
-
-        function handleConnectorClick(e, rigId, type) {
-            e.stopPropagation();
-            if (!connectionStart) {
-                connectionStart = { rigId, type };
-            } else {
-                if (connectionStart.rigId !== rigId) {
-                    createConnection(connectionStart.rigId, rigId);
-                }
-                connectionStart = null;
-            }
-        }
-
-        function createConnection(sourceId, targetId) {
-            const connId = `conn-${sourceId}-${targetId}`;
-            if (connections.find(c => c.id === connId)) return;
-            const connection = { id: connId, source: sourceId, target: targetId };
-            connections.push(connection);
-            updateConnections();
-            saveConnectionToBackend(connection);
-        }
-
-        function updateConnections() {
-            svg.innerHTML = '';
-            connections.forEach(conn => {
-                const sourceRig = rigs.find(r => r.id === conn.source);
-                const targetRig = rigs.find(r => r.id === conn.target);
-                if (!sourceRig || !targetRig) return;
-                const sourceEl = document.getElementById(sourceRig.id);
-                const targetEl = document.getElementById(targetRig.id);
-                if (!sourceEl || !targetEl) return;
-                const sourceRect = sourceEl.getBoundingClientRect();
-                const targetRect = targetEl.getBoundingClientRect();
-                const canvasRect = canvas.getBoundingClientRect();
-                const x1 = sourceRect.right - canvasRect.left;
-                const y1 = sourceRect.top - canvasRect.top + 20;
-                const x2 = targetRect.left - canvasRect.left;
-                const y2 = targetRect.top - canvasRect.top + 20;
-                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-                const dx = Math.abs(x2 - x1);
-                const curve = `M ${x1} ${y1} C ${x1 + dx * 0.5} ${y1}, ${x2 - dx * 0.5} ${y2}, ${x2} ${y2}`;
-                path.setAttribute('d', curve);
-                path.setAttribute('stroke', '#007acc');
-                path.setAttribute('stroke-width', '2');
-                path.setAttribute('fill', 'none');
-                path.setAttribute('opacity', '0.6');
-                svg.appendChild(path);
-            });
-        }
-
-        function removeRig(rigId) {
-            const index = rigs.findIndex(r => r.id === rigId);
-            if (index > -1) {
-                rigs.splice(index, 1);
-                document.getElementById(rigId).remove();
-                connections = connections.filter(c => c.source !== rigId && c.target !== rigId);
-                updateConnections();
-                fetch('/api/rigs', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: rigId }) });
-            }
-        }
-
-        function selectRig(rigId) {
-            document.querySelectorAll('.rig').forEach(r => r.classList.remove('selected'));
-            selectedRig = rigId;
-            document.getElementById(rigId).classList.add('selected');
-        }
-
-        function minimizeRig(rigId) {
-            const content = document.getElementById(rigId + '-content');
-            content.style.display = content.style.display === 'none' ? 'block' : 'none';
-        }
-
-        function updateRigContent(rigId) {
-            const rig = rigs.find(r => r.id === rigId);
-            if (rig) {
-                document.getElementById(rigId + '-content').innerHTML = getRigContent(rig);
-                saveToBackend(rig);
-            }
-        }
-
-        function addColumn(rigId) {
-            const rig = rigs.find(r => r.id === rigId);
-            if (rig) {
-                rig.data.columns.push(`Col ${rig.data.columns.length + 1}`);
-                rig.data.rows.forEach(row => row.push(''));
-                updateRigContent(rigId);
-            }
-        }
-
-        function addRow(rigId) {
-            const rig = rigs.find(r => r.id === rigId);
-            if (rig) {
-                rig.data.rows.push(new Array(rig.data.columns.length).fill(''));
-                updateRigContent(rigId);
-            }
-        }
-
-        function updateColumnName(rigId, colIndex, value) {
-            const rig = rigs.find(r => r.id === rigId);
-            if (rig) {
-                rig.data.columns[colIndex] = value;
-                saveToBackend(rig);
-            }
-        }
-
-        function updateCell(rigId, rowIndex, colIndex, value) {
-            const rig = rigs.find(r => r.id === rigId);
-            if (rig) {
-                rig.data.rows[rowIndex][colIndex] = value;
-                saveToBackend(rig);
-            }
-        }
-
-        function updateFunctionType(rigId, type) {
-            const rig = rigs.find(r => r.id === rigId);
-            if (rig) {
-                rig.data.functionType = type;
-                saveToBackend(rig);
-            }
-        }
-
-        function updateFunctionCode(rigId, code) {
-            const rig = rigs.find(r => r.id === rigId);
-            if (rig) {
-                rig.data.code = code;
-                saveToBackend(rig);
-            }
-        }
-
-        function executeFunction(rigId) {
-            const rig = rigs.find(r => r.id === rigId);
-            if (rig) {
-                const output = document.getElementById(rigId + '-output');
-                output.innerHTML = '<div class="spinner"></div> Executing...';
-                const inputConnections = connections.filter(c => c.target === rigId);
-                const inputData = inputConnections.map(c => {
-                    const sourceRig = rigs.find(r => r.id === c.source);
-                    return sourceRig ? sourceRig.data : null;
-                });
-                try {
-                    const func = new Function('input', rig.data.code);
-                    const result = func(inputData);
-                    output.innerHTML = `<pre>${JSON.stringify(result, null, 2)}</pre>`;
-                } catch(e) {
-                    output.innerHTML = `<span style="color:var(--error)">Error: ${e.message}</span>`;
-                }
-            }
-        }
-
-        function updateNeuralLayers(rigId, value) {
-            const rig = rigs.find(r => r.id === rigId);
-            if (rig) {
-                rig.data.layers = value.split(',').map(n => parseInt(n.trim()));
-                updateRigContent(rigId);
-            }
-        }
-
-        function trainNetwork(rigId) {
-            alert('Neural network training initiated for ' + rigId);
-        }
-
-        function sendLLMMessage(rigId) {
-            const rig = rigs.find(r => r.id === rigId);
-            const input = document.getElementById(rigId + '-input');
-            if (rig && input.value.trim()) {
-                rig.data.messages.push({ role: 'user', content: input.value });
-                setTimeout(() => {
-                    rig.data.messages.push({ role: 'assistant', content: 'This is a simulated AI response. Connect to actual LLM API for real responses.' });
-                    updateRigContent(rigId);
-                }, 1000);
-                updateRigContent(rigId);
-                input.value = '';
-            }
-        }
-
-        function updateChartType(rigId, type) {
-            const rig = rigs.find(r => r.id === rigId);
-            if (rig) {
-                rig.data.chartType = type;
-                saveToBackend(rig);
-            }
-        }
-
-        function executeQuery(rigId) {
-            alert('Database query executed for ' + rigId);
-        }
-
-        function loadData(rigId) {
-            alert('Data loaded for ' + rigId);
-        }
-
-        function showContextMenu(e, rig) {
-            contextMenuTarget = rig;
-            contextMenu.style.left = e.clientX + 'px';
-            contextMenu.style.top = e.clientY + 'px';
-            contextMenu.style.display = 'block';
-        }
-
-        function duplicateRig() {
-            if (contextMenuTarget || selectedRig) {
-                const original = rigs.find(r => r.id === (contextMenuTarget?.id || selectedRig));
-                if (original) {
-                    const newRig = { ...original, id: `rig-${++rigCounter}`, x: original.x + 30, y: original.y + 30 };
-                    rigs.push(newRig);
-                    createRigElement(newRig);
-                    saveToBackend(newRig);
-                }
-            }
-            contextMenu.style.display = 'none';
-        }
-
-        function deleteRig() {
-            if (contextMenuTarget || selectedRig) {
-                removeRig(contextMenuTarget?.id || selectedRig);
-            }
-            contextMenu.style.display = 'none';
-        }
-
-        function exportRig() {
-            if (contextMenuTarget) {
-                const data = JSON.stringify(contextMenuTarget, null, 2);
-                const blob = new Blob([data], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `${contextMenuTarget.id}.json`;
-                a.click();
-            }
-            contextMenu.style.display = 'none';
-        }
-
-        function saveWorkspace() {
-            localStorage.setItem('workspace', JSON.stringify({ rigs, connections }));
-            rigs.forEach(saveToBackend);
-            connections.forEach(saveConnectionToBackend);
-            alert('Workspace saved successfully!');
-        }
-
-        function loadWorkspace() {
-            fetch('/api/rigs').then(r => r.json()).then(data => {
-                rigs = data;
-                canvas.innerHTML = '';
-                rigs.forEach(createRigElement);
-                return fetch('/api/connections');
-            }).then(r => r.json()).then(data => {
-                connections = data;
-                updateConnections();
-            }).catch(err => console.log('Loading from local storage...'));
-        }
-
-        function clearCanvas() {
-            if (confirm('Clear all rigs and connections?')) {
-                rigs = [];
-                connections = [];
-                canvas.innerHTML = '';
-                svg.innerHTML = '';
-            }
-        }
-
-        function saveToBackend(rig) {
-            fetch('/api/rigs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rig) });
-        }
-
-        function saveConnectionToBackend(connection) {
-            fetch('/api/connections', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(connection) });
-        }
-
-        function setTheme(theme) {
-            document.documentElement.setAttribute('data-theme', theme);
-            document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
-            event.target.classList.add('active');
-        }
-
-        function toggleAutoConnect() {
-            autoConnect = !autoConnect;
-            event.target.classList.toggle('active');
-            alert(`Auto-connect ${autoConnect ? 'enabled' : 'disabled'}`);
-        }
-
-        function getTypeIcon(type) {
-            const icons = { data: '📊', table: '📋', function: '⚙️', llm: '🤖', neural: '🧠', chart: '📈', database: '💾', custom: '✨' };
-            return icons[type] || '📦';
-        }
-
+        // Auto-refresh data every 5 minutes
         setTimeout(() => {
-            addRig('data');
-            addRig('function');
-        }, 500);
+            window.location.reload();
+        }, 300000);
+
+        // AJAX for real-time updates
+        function updateMetric(metricId) {
+            fetch(`/api/metric/${metricId}`)
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById(`value-${metricId}`).innerText = data.value;
+                    document.getElementById(`trend-${metricId}`).innerHTML = data.trend;
+                });
+        }
+
+        // Initialize tooltips
+        document.addEventListener('DOMContentLoaded', function() {
+            var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+            var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+                return new bootstrap.Tooltip(tooltipTriggerEl);
+            });
+        });
     </script>
 </body>
-</html>'''
+</html>
+'''
 
-@app.route('/api/rigs', methods=['GET', 'POST', 'DELETE'])
-def handle_rigs():
-    if request.method == 'POST':
-        data = request.json
-        conn = sqlite3.connect('rigs.db')
-        c = conn.cursor()
-        c.execute('INSERT OR REPLACE INTO rigs VALUES (?, ?, ?)',
-                  (data['id'], data['type'], json.dumps(data)))
-        conn.commit()
-        conn.close()
-        return jsonify({'status': 'success'})
-    elif request.method == 'DELETE':
-        rig_id = request.json.get('id')
-        conn = sqlite3.connect('rigs.db')
-        c = conn.cursor()
-        c.execute('DELETE FROM rigs WHERE id = ?', (rig_id,))
-        c.execute('DELETE FROM connections WHERE source LIKE ? OR target LIKE ?', 
-                  (f'{rig_id}%', f'{rig_id}%'))
-        conn.commit()
-        conn.close()
-        return jsonify({'status': 'success'})
-    else:
-        conn = sqlite3.connect('rigs.db')
-        c = conn.cursor()
-        c.execute('SELECT data FROM rigs')
-        rigs = [json.loads(row[0]) for row in c.fetchall()]
-        conn.close()
-        return jsonify(rigs)
+DASHBOARD_TEMPLATE = '''
+{% extends "base.html" %}
+{% block title %}Dashboard - Business Insight AI{% endblock %}
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h2 class="fw-bold">Business Dashboard</h2>
+        <p class="text-muted">AI-powered insights for smarter decisions</p>
+    </div>
+    <div class="col-auto">
+        <button class="btn btn-primary" onclick="location.reload()">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+    </div>
+</div>
 
-@app.route('/api/connections', methods=['GET', 'POST', 'DELETE'])
-def handle_connections():
-    if request.method == 'POST':
-        data = request.json
-        conn = sqlite3.connect('rigs.db')
-        c = conn.cursor()
-        c.execute('INSERT OR REPLACE INTO connections VALUES (?, ?, ?, ?)',
-                  (data['id'], data['source'], data['target'], json.dumps(data)))
-        conn.commit()
-        conn.close()
-        return jsonify({'status': 'success'})
-    elif request.method == 'DELETE':
-        conn_id = request.json.get('id')
-        conn = sqlite3.connect('rigs.db')
-        c = conn.cursor()
-        c.execute('DELETE FROM connections WHERE id = ?', (conn_id,))
-        conn.commit()
-        conn.close()
-        return jsonify({'status': 'success'})
-    else:
-        conn = sqlite3.connect('rigs.db')
-        c = conn.cursor()
-        c.execute('SELECT data FROM connections')
-        connections = [json.loads(row[0]) for row in c.fetchall()]
-        conn.close()
-        return jsonify(connections)
+<!-- Key Metrics -->
+<div class="row mb-4">
+    {% for metric in metrics %}
+    <div class="col-md-3 mb-3">
+        <div class="card metric-card card-hover h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h6 class="card-subtitle text-muted">{{ metric.name }}</h6>
+                        <h3 class="card-title fw-bold mt-2" id="value-{{ metric.id }}">
+                            {{ metric.value }}
+                        </h3>
+                    </div>
+                    <div class="rounded-circle p-2" style="background: {{ metric.color }}20;">
+                        <i class="bi {{ metric.icon }} fs-4" style="color: {{ metric.color }};"></i>
+                    </div>
+                </div>
+                <div class="mt-2">
+                    <span id="trend-{{ metric.id }}">{{ metric.trend|safe }}</span>
+                    <span class="text-muted small ms-2">vs last week</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
 
-@app.route('/api/execute', methods=['POST'])
-def execute_function():
-    data = request.json
-    function_type = data.get('function')
-    params = data.get('params', {})
-    result = {'status': 'success', 'output': f'Executed {function_type} with params: {params}'}
-    return jsonify(result)
+<!-- Charts & AI Insights -->
+<div class="row">
+    <!-- Revenue Chart -->
+    <div class="col-lg-8 mb-4">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-bar-chart-line me-2"></i>Revenue Trends</h5>
+                <select class="form-select form-select-sm w-auto" onchange="updateChart(this.value)">
+                    <option value="7d">Last 7 days</option>
+                    <option value="30d">Last 30 days</option>
+                    <option value="90d">Last quarter</option>
+                </select>
+            </div>
+            <div class="card-body">
+                <div id="revenue-chart"></div>
+            </div>
+        </div>
+    </div>
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5550))
-    app.run(host="0.0.0.0", port=port)
+    <!-- AI Insights -->
+    <div class="col-lg-4 mb-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-robot me-2"></i>AI Insights</h5>
+            </div>
+            <div class="card-body">
+                {% for insight in insights %}
+                <div class="insight-card p-3 mb-3 bg-light rounded">
+                    <div class="d-flex">
+                        <div class="flex-shrink-0">
+                            <i class="bi {{ insight.icon }} fs-4 text-{{ insight.type }} me-3"></i>
+                        </div>
+                        <div class="flex-grow-1">
+                            <h6 class="fw-bold">{{ insight.title }}</h6>
+                            <p class="small mb-0">{{ insight.message }}</p>
+                            <div class="mt-2 small text-muted">
+                                <i class="bi bi-clock me-1"></i> {{ insight.time }}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+                <button class="btn btn-outline-primary w-100" onclick="generateInsight()">
+                    <i class="bi bi-magic me-1"></i> Generate New Insight
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Activity -->
+<div class="row mt-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-activity me-2"></i>Recent Activity</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Event</th>
+                                <th>Impact</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for activity in activities %}
+                            <tr>
+                                <td class="small">{{ activity.time }}</td>
+                                <td>{{ activity.event }}</td>
+                                <td><span class="badge bg-{{ activity.impact }}">{{ activity.impact|capitalize }}</span></td>
+                                <td class="small">{{ activity.details }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Render Plotly chart
+    var graphJSON = {{ chart_json|safe }};
+    Plotly.newPlot('revenue-chart', graphJSON.data, graphJSON.layout);
+
+    function updateChart(range) {
+        fetch(`/api/chart/${range}`)
+            .then(r => r.json())
+            .then(data => {
+                Plotly.react('revenue-chart', data.data, data.layout);
+            });
+    }
+
+    function generateInsight() {
+        document.querySelector('#ai-insights').innerHTML = `
+            <div class="text-center py-4">
+                <div class="loader mx-auto mb-3"></div>
+                <p>AI is analyzing your data...</p>
+            </div>`;
+        
+        fetch('/api/generate-insight')
+            .then(r => r.json())
+            .then(data => {
+                location.reload();
+            });
+    }
+</script>
+{% endblock %}
+'''
+
+# ========== DATABASE SETUP ==========
+def init_db():
+    """Initialize SQLite database with sample data"""
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    # Create tables
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS metrics (
+            id INTEGER PRIMARY KEY,
+            name TEXT,
+            value REAL,
+            target REAL,
+            unit TEXT,
+            trend REAL
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS revenue (
+            date TEXT PRIMARY KEY,
+            amount REAL,
+            customers INTEGER,
+            avg_order REAL
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS insights (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            message TEXT,
+            type TEXT,
+            created_at TIMESTAMP
+        )
+    ''')
+    
+    # Check if we need to populate with sample data
+    c.execute("SELECT COUNT(*) FROM metrics")
+    if c.fetchone()[0] == 0:
+        sample_metrics = [
+            ('Monthly Revenue', 124850, 120000, '$', 4.2),
+            ('Active Customers', 3421, 3500, '', 1.8),
+            ('Conversion Rate', 3.42, 3.5, '%', -0.3),
+            ('Avg Order Value', 89.50, 85.0, '$', 2.1),
+            ('Customer Satisfaction', 4.7, 4.5, '/5', 0.2),
+            ('Churn Rate', 2.1, 2.0, '%', -0.1)
+        ]
+        c.executemany('INSERT INTO metrics (name, value, target, unit, trend) VALUES (?,?,?,?,?)', sample_metrics)
+        
+        # Generate 30 days of revenue data
+        base_date = datetime.now() - timedelta(days=30)
+        for i in range(30):
+            date = (base_date + timedelta(days=i)).strftime('%Y-%m-%d')
+            amount = 3500 + random.randint(-200, 500) + (i * 15)
+            customers = random.randint(80, 120)
+            avg_order = 75 + random.randint(-10, 15)
+            c.execute('INSERT OR REPLACE INTO revenue VALUES (?,?,?,?)', (date, amount, customers, avg_order))
+        
+        # Sample insights
+        sample_insights = [
+            ('Revenue Growth Detected', 'Thursday shows 15% higher revenue than weekly average. Consider promoting Thursday specials.', 'success', datetime.now() - timedelta(hours=2)),
+            ('Customer Feedback Alert', '3 customers mentioned slow checkout. Review payment processing flow.', 'warning', datetime.now() - timedelta(hours=5)),
+            ('Upsell Opportunity', 'Customers who bought Product A are 40% more likely to buy Product B. Create bundle offer.', 'primary', datetime.now() - timedelta(hours=8))
+        ]
+        c.executemany('INSERT INTO insights (title, message, type, created_at) VALUES (?,?,?,?)', sample_insights)
+    
+    conn.commit()
+    conn.close()
+
+# ========== BUSINESS LOGIC ==========
+class BusinessAnalytics:
+    @staticmethod
+    def calculate_growth(current, previous):
+        if previous == 0:
+            return 0
+        return round(((current - previous) / previous) * 100, 1)
+    
+    @staticmethod
+    def generate_ai_insight():
+        """Generate AI-powered business insight"""
+        insights = [
+            {
+                'title': 'Weekend Performance',
+                'message': 'Weekend sales are 22% higher than weekdays. Consider targeted weekend promotions.',
+                'type': 'success',
+                'icon': 'bi-calendar-week'
+            },
+            {
+                'title': 'Customer Segmentation',
+                'message': 'Top 20% of customers generate 65% of revenue. Launch loyalty program.',
+                'type': 'primary',
+                'icon': 'bi-people'
+            },
+            {
+                'title': 'Operational Efficiency',
+                'message': 'Peak hours: 2-4 PM. Consider staffing adjustments for better service.',
+                'type': 'warning',
+                'icon': 'bi-clock-history'
+            },
+            {
+                'title': 'Product Opportunity',
+                'message': 'Accessories have highest margin (42%). Feature them more prominently.',
+                'type': 'info',
+                'icon': 'bi-box'
+            }
+        ]
+        return random.choice(insights)
+    
+    @staticmethod
+    def predict_next_week():
+        """Simple prediction algorithm"""
+        conn = sqlite3.connect(DATABASE)
+        c = conn.cursor()
+        c.execute("SELECT amount FROM revenue ORDER BY date DESC LIMIT 7")
+        data = [row[0] for row in c.fetchall()]
+        conn.close()
+        
+        if len(data) >= 2:
+            growth = (data[0] - data[-1]) / data[-1]
+            prediction = data[0] * (1 + growth * 0.7)  # Conservative projection
+            return round(prediction, 2)
+        return 0
+
+# ========== ROUTES ==========
+@app.route('/')
+def dashboard():
+    """Main dashboard page"""
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    # Get metrics
+    c.execute("SELECT rowid, name, value, target, unit, trend FROM metrics")
+    metrics_data = []
+    colors = ['#6366f1', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4']
+    icons = ['bi-cash-coin', 'bi-person-check', 'bi-percent', 'bi-cart', 'bi-star', 'bi-arrow-down-right']
+    
+    for idx, row in enumerate(c.fetchall()):
+        metric_id, name, value, target, unit, trend = row
+        trend_html = f'<i class="bi bi-arrow-up-right trend-{"up" if trend > 0 else "down"}"></i> {abs(trend)}%'
+        metrics_data.append({
+            'id': metric_id,
+            'name': name,
+            'value': f'{unit}{value:,}' if unit != '%' else f'{value}%',
+            'trend': trend_html,
+            'color': colors[idx % len(colors)],
+            'icon': icons[idx % len(icons)]
+        })
+    
+    # Generate chart data
+    c.execute("SELECT date, amount FROM revenue ORDER BY date DESC LIMIT 30")
+    revenue_data = c.fetchall()
+    dates = [row[0][5:] for row in reversed(revenue_data)]  # MM-DD format
+    amounts = [row[1] for row in reversed(revenue_data)]
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=amounts,
+        mode='lines+markers',
+        name='Revenue',
+        line=dict(color='#6366f1', width=3),
+        fill='tozeroy',
+        fillcolor='rgba(99, 102, 241, 0.1)'
+    ))
+    
+    fig.update_layout(
+        template='plotly_white',
+        height=300,
+        margin=dict(l=0, r=0, t=30, b=0),
+        showlegend=False,
+        xaxis_title=None,
+        yaxis_title=None,
+        hovermode='x unified'
+    )
+    
+    chart_json = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
+    
+    # Get AI insights
+    c.execute("SELECT title, message, type FROM insights ORDER BY created_at DESC LIMIT 3")
+    insights_data = []
+    type_icons = {
+        'success': 'bi-check-circle',
+        'warning': 'bi-exclamation-triangle',
+        'primary': 'bi-lightbulb',
+        'info': 'bi-info-circle'
+    }
+    
+    for title, message, insight_type in c.fetchall():
+        insights_data.append({
+            'title': title,
+            'message': message,
+            'type': insight_type,
+            'icon': type_icons.get(insight_type, 'bi-info-circle'),
+            'time': '2 hours ago'
+        })
+    
+    # Recent activities
+    activities = [
+        {'time': '10:30 AM', 'event': 'Revenue target exceeded', 'impact': 'success', 'details': 'Monthly goal achieved 3 days early'},
+        {'time': '9:15 AM', 'event': 'New customer segment identified', 'impact': 'primary', 'details': '25-34 age group increased by 18%'},
+        {'time': 'Yesterday', 'event': 'Website traffic spike', 'impact': 'warning', 'details': '+42% traffic from social media'},
+        {'time': 'Mar 12', 'event': 'Product launch', 'impact': 'info', 'details': 'New premium tier launched'}
+    ]
+    
+    conn.close()
+    
+    return render_template_string(
+        DASHBOARD_TEMPLATE,
+        metrics=metrics_data,
+        chart_json=chart_json,
+        insights=insights_data,
+        activities=activities,
+        current_time=datetime.now().strftime('%Y-%m-%d %H:%M')
+    )
+
+@app.route('/api/metric/<int:metric_id>')
+def get_metric(metric_id):
+    """API endpoint for live metric updates"""
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute("SELECT name, value, unit, trend FROM metrics WHERE rowid=?", (metric_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if row:
+        name, value, unit, trend = row
+        trend_html = f'<i class="bi bi-arrow-up-right trend-{"up" if trend > 0 else "down"}"></i> {abs(trend)}%'
+        return jsonify({
+            'value': f'{unit}{value:,}' if unit != '%' else f'{value}%',
+            'trend': trend_html
+        })
+    return jsonify({'error': 'Metric not found'}), 404
+
+@app.route('/api/chart/<range>')
+def get_chart_data(range):
+    """API endpoint for chart updates"""
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    if range == '7d':
+        c.execute("SELECT date, amount FROM revenue ORDER BY date DESC LIMIT 7")
+    elif range == '30d':
+        c.execute("SELECT date, amount FROM revenue ORDER BY date DESC LIMIT 30")
+    else:  # 90d
+        c.execute("SELECT date, amount FROM revenue ORDER BY date DESC LIMIT 90")
+    
+    data = c.fetchall()
+    conn.close()
+    
+    dates = [row[0][5:] for row in reversed(data)]
+    amounts = [row[1] for row in reversed(data)]
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=amounts,
+        mode='lines+markers',
+        name='Revenue',
+        line=dict(color='#6366f1', width=3)
+    ))
+    
+    fig.update_layout(
+        template='plotly_white',
+        height=300,
+        margin=dict(l=0, r=0, t=0, b=0),
+        showlegend=False
+    )
+    
+    return jsonify(fig.to_dict())
+
+@app.route('/api/generate-insight')
+def generate_insight():
+    """Generate new AI insight"""
+    insight = BusinessAnalytics.generate_ai_insight()
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO insights (title, message, type, created_at) VALUES (?,?,?,?)",
+        (insight['title'], insight['message'], insight['type'], datetime.now())
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True, 'insight': insight})
+
+@app.route('/reports')
+def reports():
+    """Simple reports page"""
+    html = '''
+    <div class="card">
+        <div class="card-header">
+            <h4><i class="bi bi-file-earmark-pdf me-2"></i>Business Reports</h4>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <div class="card card-hover">
+                        <div class="card-body text-center">
+                            <i class="bi bi-file-text fs-1 text-primary mb-3"></i>
+                            <h5>Monthly Performance</h5>
+                            <p class="text-muted">Complete analysis for {{ current_month }}</p>
+                            <button class="btn btn-outline-primary">Generate PDF</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4 mb-3">
+                    <div class="card card-hover">
+                        <div class="card-body text-center">
+                            <i class="bi bi-graph-up fs-1 text-success mb-3"></i>
+                            <h5>Growth Trends</h5>
+                            <p class="text-muted">Year-over-year comparison</p>
+                            <button class="btn btn-outline-success">View Analysis</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4 mb-3">
+                    <div class="card card-hover">
+                        <div class="card-body text-center">
+                            <i class="bi bi-people fs-1 text-warning mb-3"></i>
+                            <h5>Customer Report</h5>
+                            <p class="text-muted">Segmentation and behavior</p>
+                            <button class="btn btn-outline-warning">Generate</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <a href="/" class="btn btn-link mt-3"><i class="bi bi-arrow-left"></i> Back to Dashboard</a>
+    '''
+    return render_template_string(
+        BASE_TEMPLATE.replace('{% block content %}{% endblock %}', html),
+        current_time=datetime.now().strftime('%Y-%m-%d %H:%M'),
+        current_month=datetime.now().strftime('%B %Y')
+    )
+
+@app.route('/settings')
+def settings():
+    """Settings page"""
+    html = '''
+    <div class="row justify-content-center">
+        <div class="col-lg-6">
+            <div class="card">
+                <div class="card-header">
+                    <h4><i class="bi bi-gear me-2"></i>Settings</h4>
+                </div>
+                <div class="card-body">
+                    <form>
+                        <div class="mb-3">
+                            <label class="form-label">Company Name</label>
+                            <input type="text" class="form-control" value="BizInsight AI Demo">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Data Refresh Interval</label>
+                            <select class="form-select">
+                                <option>15 minutes</option>
+                                <option selected>30 minutes</option>
+                                <option>1 hour</option>
+                                <option>4 hours</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Notification Preferences</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" checked>
+                                <label class="form-check-label">Email alerts for anomalies</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" checked>
+                                <label class="form-check-label">Weekly summary reports</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox">
+                                <label class="form-check-label">Real-time mobile notifications</label>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">AI Analysis Level</label>
+                            <div class="form-range" min="1" max="3" step="1">
+                                <span class="badge bg-light text-dark me-2">Basic</span>
+                                <span class="badge bg-primary me-2">Standard</span>
+                                <span class="badge bg-dark">Advanced</span>
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Save Settings</button>
+                    </form>
+                </div>
+            </div>
+            <div class="card mt-3">
+                <div class="card-body">
+                    <h5><i class="bi bi-shield-check me-2"></i>Data Management</h5>
+                    <p class="text-muted small">All data is stored locally in your browser and SQLite database.</p>
+                    <button class="btn btn-outline-danger me-2"><i class="bi bi-trash"></i> Clear Cache</button>
+                    <button class="btn btn-outline-secondary"><i class="bi bi-download"></i> Export Data</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <a href="/" class="btn btn-link mt-3"><i class="bi bi-arrow-left"></i> Back to Dashboard</a>
+    '''
+    return render_template_string(
+        BASE_TEMPLATE.replace('{% block content %}{% endblock %}', html),
+        current_time=datetime.now().strftime('%Y-%m-%d %H:%M')
+    )
+
+# ========== MAIN EXECUTION ==========
+if __name__ == '__main__':
+    # Initialize database with sample data
+    init_db()
+    
+    # Print startup information
+    print("\n" + "="*50)
+    print("🚀 AI Business Insight Dashboard")
+    print("="*50)
+    print(f"Local:   http://127.0.0.1:5000")
+    print(f"Network: http://{os.environ.get('HOST', '0.0.0.0')}:{os.environ.get('PORT', 5000)}")
+    print("\n📊 Features:")
+    print("  • Real-time business metrics")
+    print("  • AI-generated insights")
+    print("  • Interactive revenue charts")
+    print("  • SQLite database with sample data")
+    print("  • Fully responsive design")
+    print("="*50 + "\n")
+    
+    # Run the app
+    app.run(
+        host=os.environ.get('HOST', '0.0.0.0'),
+        port=int(os.environ.get('PORT', 5000)),
+        debug=True
+    )
