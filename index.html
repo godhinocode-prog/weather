@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Delivery Weather Advisor</title>
+  <style>
+    body { font-family: Arial; background:#0f172a; color:white; display:flex; height:100vh; align-items:center; justify-content:center; }
+    .card { background:#111827; padding:30px; border-radius:12px; width:350px; }
+    input, button { width:100%; padding:10px; margin-top:10px; border-radius:6px; border:none; }
+    button { background:#22c55e; font-weight:bold; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>🛵 Delivery Advisor</h2>
+    <input id="city" placeholder="Enter city (e.g. Lagos)" />
+    <button onclick="checkDelivery()">Check Delivery Conditions</button>
+
+    <div id="result" style="margin-top:15px;"></div>
+  </div>
+
+  <script>
+    async function checkDelivery() {
+      const city = document.getElementById("city").value;
+      document.getElementById("result").innerText = "Checking conditions...";
+      const res = await fetch("/advisor?city=" + city);
+      const data = await res.json();
+
+      document.getElementById("result").innerHTML = `
+        <p><b>City:</b> ${data.city}</p>
+        <p><b>Weather:</b> ${data.weather}</p>
+        <p><b>Advice:</b> ${data.advice}</p>
+      `;
+    }
+  </script>
+</body>
+</html>
